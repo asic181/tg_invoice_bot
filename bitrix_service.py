@@ -8,7 +8,8 @@ load_dotenv()
 WEBHOOK_URL = (os.getenv("BITRIX24_WEBHOOK_URL") or "").rstrip("/")
 ENTITY_TYPE_ID = int(os.getenv("BITRIX24_ENTITY_TYPE_ID", 31))
 
-UF_INVOICE_FILE = os.getenv("UF_INVOICE_FILE", "ufCrm_SMART_INVOICE_1787937924417")
+# Пользовательские поля
+UF_INVOICE_FILE = os.getenv("UF_INVOICE_FILE")
 UF_TG_CHAT_ID = os.getenv("UF_TG_CHAT_ID")
 UF_TG_MSG_ID = os.getenv("UF_TG_MSG_ID")
 
@@ -18,9 +19,8 @@ async def create_invoice_in_bitrix(
     user_name: str,
     comment: str,
     tg_username: str,
-    chat_id: int,
-    message_id: int,
-    amount: float = 0.0
+    chat_id: int | str = None,
+    message_id: int | str = None
 ) -> dict:
     if not WEBHOOK_URL:
         raise ValueError("В файле .env не задан параметр BITRIX24_WEBHOOK_URL")
@@ -28,24 +28,27 @@ async def create_invoice_in_bitrix(
     file_b64 = base64.b64encode(file_bytes).decode("utf-8")
     
     title = f"Счет от {user_name} ({file_name})"
-    full_comment = f"Отправитель: {user_name} (@{tg_username})<br>Чат: {chat_id}<br>Сообщение: {message_id}<br>Комментарий: {comment}"
+    full_comment = f"Отправитель: {user_name} (@{tg_username})\nКомментарий: {comment}"
     
     fields = {
         "title": title,
-        "comments": full_comment,
-        "opportunity": amount,
-        "isManualOpportunity": "Y" if amount > 0 else "N",
-        "currencyId": "RUB"
+        "comments": full_comment.replace("\n", "<br>")
     }
-
-    # Прикрепляем файл
+    
+    # Привязка файла к пользовательскому полю
     if UF_INVOICE_FILE:
-        fields[UF_INVOICE_FILE] = [file_name, file_b64]
+        fields[UF_INVOICE_FILE] = {
+            "fileData": [file_name, file_b64]
+        }
+    else:
+        # Резервный вариант, если UF_INVOICE_FILE не задан
+        fields["fileData"] = [file_name, file_b64]
 
-    # Записываем Chat ID и Message ID в пользовательские поля
-    if UF_TG_CHAT_ID:
+    # Запись ID чата и сообщения
+    if UF_TG_CHAT_ID and chat_id:
         fields[UF_TG_CHAT_ID] = str(chat_id)
-    if UF_TG_MSG_ID:
+        
+    if UF_TG_MSG_ID and message_id:
         fields[UF_TG_MSG_ID] = str(message_id)
     
     payload = {
@@ -54,7 +57,7 @@ async def create_invoice_in_bitrix(
     }
     
     async with aiohttp.ClientSession() as session:
-        url = f"{WEBHOOK_URL}/crm.item.add"
+        url = f"{WEBHOOK_URL}/crm.item.add.json"
         async with session.post(url, json=payload) as resp:
             result = await resp.json()
             
@@ -69,6 +72,5 @@ async def create_invoice_in_bitrix(
             
             return {
                 "id": item_id,
-                "url": crm_url,
-                "amount": amount
+                "url": crm_url
             }

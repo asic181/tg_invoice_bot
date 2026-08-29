@@ -1,15 +1,15 @@
-import io
-import os
 import html
+import io
 import logging
+import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, LinkPreviewOptions
-from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.types import LinkPreviewOptions, Message
 
 from bitrix_service import create_invoice_in_bitrix
 
@@ -20,8 +20,8 @@ logging.basicConfig(
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ALLOWED_CHATS = [
-    int(chat_id.strip()) 
-    for chat_id in os.getenv("ALLOWED_CHAT_IDS", "").split(",") 
+    int(chat_id.strip())
+    for chat_id in os.getenv("ALLOWED_CHAT_IDS", "").split(",")
     if chat_id.strip()
 ]
 
@@ -43,8 +43,8 @@ async def handle_invoice_file(message: Message):
         return
 
     user = message.from_user
-    user_name = user.full_name or user.first_name or "Сотрудник"
-    tg_username = user.username or "без_username"
+    user_name = (user.full_name or user.first_name) if user else "Сотрудник"
+    tg_username = (user.username or "без_username") if user else "без_username"
     raw_comment = message.caption or "Без комментария"
 
     status_msg = await message.reply("⏳ Загружаю счет и создаю запись в Битрикс24...")
@@ -72,7 +72,7 @@ async def handle_invoice_file(message: Message):
         safe_tg_username = html.escape(tg_username)
         safe_comment = html.escape(raw_comment)
         safe_file_name = html.escape(file_name)
-        
+
         # Блок отображения суммы, если она передается сервисом
         amount_val = crm_result.get("amount")
         amount_line = f"• <b>Сумма:</b> {amount_val:,.2f} ₽\n".replace(",", " ") if amount_val else ""
@@ -86,9 +86,9 @@ async def handle_invoice_file(message: Message):
             f"• <b>Файл:</b> {safe_file_name}\n\n"
             f"🔗 <a href=\"{crm_result['url']}\">Перейти к счету в Битрикс24</a>"
         )
-        
+
         await status_msg.edit_text(
-            reply_text, 
+            reply_text,
             link_preview_options=LinkPreviewOptions(is_disabled=True)
         )
 
