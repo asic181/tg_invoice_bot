@@ -14,36 +14,6 @@ UF_TG_CHAT_ID = os.getenv("UF_TG_CHAT_ID", "ufCrm_SMART_INVOICE_1788010563656").
 UF_TG_MSG_ID = os.getenv("UF_TG_MSG_ID", "ufCrm_SMART_INVOICE_1788010580360").strip()
 
 
-async def upload_file_to_disk(session: aiohttp.ClientSession, file_bytes: bytes, file_name: str) -> int | None:
-    """Загружает файл на общий Диск Битрикс24 и возвращает ID файла."""
-    try:
-        async with session.post(f"{WEBHOOK_URL}/disk.storage.getlist.json") as resp:
-            storage_res = await resp.json()
-            storages = storage_res.get("result", [])
-            if not storages:
-                logging.error("Не удалось найти хранилище на Диске Битрикс24")
-                return None
-            storage_id = storages[0]["ID"]
-
-        file_b64 = base64.b64encode(file_bytes).decode("utf-8")
-        upload_payload = {
-            "id": storage_id,
-            "data": {
-                "NAME": file_name
-            },
-            "fileContent": [file_name, file_b64]
-        }
-        
-        async with session.post(f"{WEBHOOK_URL}/disk.storage.uploadfile.json", json=upload_payload) as up_resp:
-            upload_res = await up_resp.json()
-            file_id = upload_res.get("result", {}).get("ID")
-            logging.info(f"📁 Файл успешно загружен на Диск Битрикс24 с ID: {file_id}")
-            return file_id
-    except Exception as err:
-        logging.error(f"Ошибка загрузки на Диск: {err}", exc_info=True)
-        return None
-
-
 async def create_invoice_in_bitrix(
     file_bytes: bytes,
     file_name: str,
@@ -56,80 +26,49 @@ async def create_invoice_in_bitrix(
     if not WEBHOOK_URL:
         raise ValueError("В файле .env не задан параметр BITRIX24_WEBHOOK_URL")
 
+    # Переводим файл в base64, как и раньше
+    file_b64 = base64.b64encode(file_bytes).decode("utf-8")
+    
     title = f"Счет от {user_name} ({file_name})"
     full_comment = f"Отправитель: {user_name} (@{tg_username})\nКомментарий: {comment}"
     
     fields = {
         "title": title,
-        "comments": full_comment.replace("\n", "<br>")
+        "comments": full_comment.replace("\n", "<br>"),
+        # 1. Стандартный системный файл (как было в рабочей версии)
+        "fileData": [file_name, file_b64],
+        # 2. И в кастомное поле файла
+        UF_INVOICE_FILE: {
+            "fileData": [file_name, file_b64]
+        }
     }
     
+    # ID чата и ID сообщения
     if UF_TG_CHAT_ID and chat_id:
         fields[UF_TG_CHAT_ID] = str(chat_id)
 
     if UF_TG_MSG_ID and message_id:
         fields[UF_TG_MSG_ID] = str(message_id)
+    
+    payload = {
+        "entityTypeId": ENTITY_TYPE_ID,
+        "fields": fields
+    }
 
     async with aiohttp.ClientSession() as session:
-        # 1. Загружаем файл на Диск
-        disk_file_id = await upload_file_to_disk(session, file_bytes, file_name)
-
-        if disk_file_id and UF_INVOICE_FILE:
-            # Передаем массив ID (число и строка)
-            fields[UF_INVOICE_FILE] = [disk_file_id]
-
-        payload = {
-            "entityTypeId": ENTITY_TYPE_ID,
-            "fields": fields
-        }
-
-        logging.info(f"📤 Создание элемента в Битрикс24: {fields}")
-
-        # 2. Создаем карточку счета
         url = f"{WEBHOOK_URL}/crm.item.add.json"
         async with session.post(url, json=payload) as resp:
-            status_code = resp.status
             result = await resp.json()
             
-            logging.info(f"📥 Ответ crm.item.add (HTTP {status_code}): {result}")
-            
             if "error" in result:
-                logging.error(f"❌ Ошибка Битрикс24: {result}")
+                logging.error(f"Ошибка Битрикс24: {result}")
                 raise Exception(f"Bitrix24 API Error: {result.get('error_description', result['error'])}")
             
             item_data = result.get("result", {}).get("item", {})
             item_id = item_data.get("id")
-
-            # 3. Обновляем поле файла через update, если оно осталось 0/None
-            if disk_file_id and UF_INVOICE_FILE and not item_data.get(UF_INVOICE_FILE):
-                logging.info(f"Привязываем файл к полю {UF_INVOICE_FILE} через crm.item.update...")
-                
-                # Пробуем передать как список ID и как одиночный ID
-                update_payload = {
-                    "entityTypeId": ENTITY_TYPE_ID,
-                    "id": item_id,
-                    "fields": {
-                        UF_INVOICE_FILE: [disk_file_id]
-                    }
-                }
-                async with session.post(f"{WEBHOOK_URL}/crm.item.update.json", json=update_payload) as up_resp:
-                    up_result = await up_resp.json()
-                    logging.info(f"📥 Ответ crm.item.update: {up_result}")
-
-            # 4. Добавляем запись с прикрепленным файлом в таймлайн карточки
-            if disk_file_id:
-                timeline_payload = {
-                    "fields": {
-                        "ENTITY_ID": item_id,
-                        "ENTITY_TYPE": "smart_invoice",
-                        "COMMENT": f"Прикрепленный файл счета: {file_name}",
-                        "FILES": [{"id": disk_file_id}]
-                    }
-                }
-                async with session.post(f"{WEBHOOK_URL}/crm.timeline.comment.add.json", json=timeline_payload) as tm_resp:
-                    tm_result = await tm_resp.json()
-                    logging.info(f"📥 Ответ crm.timeline.comment.add: {tm_result}")
-
+            
+            logging.info(f"✅ Карточка #{item_id} успешно создана со всеми полями!")
+            
             domain = WEBHOOK_URL.split("/rest/")[0]
             crm_url = f"{domain}/crm/type/{ENTITY_TYPE_ID}/details/{item_id}/"
             
