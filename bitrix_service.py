@@ -26,7 +26,7 @@ async def create_invoice_in_bitrix(
     if not WEBHOOK_URL:
         raise ValueError("В файле .env не задан параметр BITRIX24_WEBHOOK_URL")
 
-    # Переводим файл в base64, как и раньше
+    # Преобразуем файл в чистую base64 строку
     file_b64 = base64.b64encode(file_bytes).decode("utf-8")
     
     title = f"Счет от {user_name} ({file_name})"
@@ -34,16 +34,13 @@ async def create_invoice_in_bitrix(
     
     fields = {
         "title": title,
-        "comments": full_comment.replace("\n", "<br>"),
-        # 1. Стандартный системный файл (как было в рабочей версии)
-        "fileData": [file_name, file_b64],
-        # 2. И в кастомное поле файла
-        UF_INVOICE_FILE: {
-            "fileData": [file_name, file_b64]
-        }
+        "comments": full_comment.replace("\n", "<br>")
     }
+
+    # В смарт-процессах файл передается прямым массивом: [имя_файла, base64]
+    if UF_INVOICE_FILE:
+        fields[UF_INVOICE_FILE] = [file_name, file_b64]
     
-    # ID чата и ID сообщения
     if UF_TG_CHAT_ID and chat_id:
         fields[UF_TG_CHAT_ID] = str(chat_id)
 
@@ -58,16 +55,17 @@ async def create_invoice_in_bitrix(
     async with aiohttp.ClientSession() as session:
         url = f"{WEBHOOK_URL}/crm.item.add.json"
         async with session.post(url, json=payload) as resp:
+            status_code = resp.status
             result = await resp.json()
             
             if "error" in result:
-                logging.error(f"Ошибка Битрикс24: {result}")
+                logging.error(f"❌ Ошибка Битрикс24: {result}")
                 raise Exception(f"Bitrix24 API Error: {result.get('error_description', result['error'])}")
             
             item_data = result.get("result", {}).get("item", {})
             item_id = item_data.get("id")
             
-            logging.info(f"✅ Карточка #{item_id} успешно создана со всеми полями!")
+            logging.info(f"✅ Карточка #{item_id} создана с файлом: {item_data.get(UF_INVOICE_FILE)}")
             
             domain = WEBHOOK_URL.split("/rest/")[0]
             crm_url = f"{domain}/crm/type/{ENTITY_TYPE_ID}/details/{item_id}/"
