@@ -59,6 +59,7 @@ async def handle_invoice_file(message: Message):
         await bot.download_file(file_info.file_path, destination=file_bytes_io)
         file_bytes = file_bytes_io.getvalue()
 
+        # Создаем счет в Битрикс24
         crm_result = await create_invoice_in_bitrix(
             file_bytes=file_bytes,
             file_name=file_name,
@@ -98,26 +99,38 @@ async def handle_invoice_file(message: Message):
 # =======================================================
 # 2. ВЕБХУК ДЛЯ УВЕДОМЛЕНИЙ ОБ ОПЛАТЕ ИЗ БИТРИКС24
 # =======================================================
+def clean_val(val: str) -> str:
+    """Удаляет фигурные скобки, кавычки и пробелы от макросов Битрикс24."""
+    if not val:
+        return ""
+    return str(val).strip("{}'\" \t\r\n")
+
+
 async def handle_paid_webhook(request: web.Request):
     """Принимает запрос от робота Битрикс24 и отправляет реплай в группу."""
     try:
-        # Считываем параметры как из GET-строки, так и из POST-тела
         params = request.query
         if not params and request.method == "POST":
             params = await request.post()
 
-        chat_id = params.get("chat_id")
-        reply_to = params.get("reply_to_message_id")
-        title = params.get("title", "Счет")
-        amount = params.get("amount", "")
+        # Извлекаем и очищаем параметры
+        raw_chat_id = clean_val(params.get("chat_id", ""))
+        raw_reply_to = clean_val(params.get("reply_to_message_id", ""))
+        title = clean_val(params.get("title", "Счет"))
+        amount = clean_val(params.get("amount", ""))
 
-        logging.info(f"Получен вебхук об оплате: chat_id={chat_id}, reply_to={reply_to}, title={title}")
+        logging.info(f"Вебхук оплаты: chat_id={raw_chat_id}, reply_to={raw_reply_to}, title={title}, amount={amount}")
 
-        if not chat_id:
-            return web.Response(text="chat_id is required", status=400)
+        # Валидация chat_id
+        if not raw_chat_id or not (raw_chat_id.lstrip("-").isdigit()):
+            logging.warning(f"Пропущен невалидный chat_id: '{raw_chat_id}'")
+            return web.Response(text="Invalid or empty chat_id", status=400)
 
-        # Формируем красивое сообщение об оплате
-        amount_text = f"\n• <b>Сумма:</b> {html.escape(str(amount))} ₽" if amount else ""
+        chat_id = int(raw_chat_id)
+        reply_id = int(raw_reply_to) if raw_reply_to.isdigit() else None
+
+        # Формирование сообщения об оплате
+        amount_text = f"\n• <b>Сумма:</b> {html.escape(amount)} ₽" if amount else ""
         text = (
             f"✅ <b>СЧЕТ УСПЕШНО ОПЛАЧЕН</b>\n\n"
             f"• <b>Счет:</b> {html.escape(title)}"
@@ -125,10 +138,8 @@ async def handle_paid_webhook(request: web.Request):
             f"• <b>Статус:</b> Оплата проведена бухгалтерией 🎉"
         )
 
-        reply_id = int(reply_to) if reply_to and str(reply_to).isdigit() else None
-
         await bot.send_message(
-            chat_id=int(chat_id),
+            chat_id=chat_id,
             text=text,
             reply_to_message_id=reply_id,
             allow_sending_without_reply=True
@@ -142,10 +153,10 @@ async def handle_paid_webhook(request: web.Request):
 
 
 # ==========================================
-# 3. ТОЧКА ВХОДА (Запуск бота + Веб-сервера)
+# 3. ТОЧКА ВХОДА (Сервер + Polling)
 # ==========================================
 async def main():
-    # Настройка веб-сервера
+    # Запуск внутреннего веб-сервера на порту 8080
     app = web.Application()
     app.router.add_get("/paid", handle_paid_webhook)
     app.router.add_post("/paid", handle_paid_webhook)
@@ -154,10 +165,10 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", 8080)
     await site.start()
-    logging.info("Веб-сервер запущен на http://0.0.0.0:8080/paid")
+    logging.info("Веб-сервер вебхуков запущен на порту 8080 (/paid)")
 
-    # Запуск Telegram поллинга
-    logging.info("Бот запущен и ожидает файлы в группе...")
+    # Запуск Telegram-бота
+    logging.info("Telegram-бот запущен и ожидает файлы...")
     try:
         await dp.start_polling(bot)
     finally:
