@@ -9,8 +9,10 @@ load_dotenv()
 WEBHOOK_URL = (os.getenv("BITRIX24_WEBHOOK_URL") or "").rstrip("/")
 ENTITY_TYPE_ID = int(os.getenv("BITRIX24_ENTITY_TYPE_ID", 31))
 
-UF_TG_CHAT_ID = os.getenv("UF_TG_CHAT_ID", "").strip()
-UF_TG_MSG_ID = os.getenv("UF_TG_MSG_ID", "").strip()
+# Точные системные имена полей
+UF_INVOICE_FILE = os.getenv("UF_INVOICE_FILE", "ufCrm_SMART_INVOICE_1787937924417").strip()
+UF_TG_CHAT_ID = os.getenv("UF_TG_CHAT_ID", "ufCrm_SMART_INVOICE_1788010563656").strip()
+UF_TG_MSG_ID = os.getenv("UF_TG_MSG_ID", "ufCrm_SMART_INVOICE_1788010580360").strip()
 
 
 async def create_invoice_in_bitrix(
@@ -30,34 +32,26 @@ async def create_invoice_in_bitrix(
     title = f"Счет от {user_name} ({file_name})"
     full_comment = f"Отправитель: {user_name} (@{tg_username})\nКомментарий: {comment}"
     
+    # Формируем поля элемента
     fields = {
         "title": title,
         "comments": full_comment.replace("\n", "<br>"),
-        "fileData": [file_name, file_b64]
+        # Передаем файл напрямую в кастомное поле
+        UF_INVOICE_FILE: {
+            "fileData": [file_name, file_b64]
+        }
     }
     
-    logging.info(f"⚙️ Проверка UF-полей из .env -> UF_TG_CHAT_ID='{UF_TG_CHAT_ID}', UF_TG_MSG_ID='{UF_TG_MSG_ID}'")
-
     if UF_TG_CHAT_ID and chat_id:
         fields[UF_TG_CHAT_ID] = str(chat_id)
-        logging.info(f"➕ Добавлено поле Chat ID [{UF_TG_CHAT_ID}] = {chat_id}")
-    elif not UF_TG_CHAT_ID:
-        logging.warning("⚠️ Переменная UF_TG_CHAT_ID не задана в .env!")
 
     if UF_TG_MSG_ID and message_id:
         fields[UF_TG_MSG_ID] = str(message_id)
-        logging.info(f"➕ Добавлено поле Msg ID [{UF_TG_MSG_ID}] = {message_id}")
-    elif not UF_TG_MSG_ID:
-        logging.warning("⚠️ Переменная UF_TG_MSG_ID не задана в .env!")
     
     payload = {
         "entityTypeId": ENTITY_TYPE_ID,
         "fields": fields
     }
-    
-    fields_for_log = dict(fields)
-    fields_for_log["fileData"] = [file_name, f"<{len(file_bytes)} bytes b64>"]
-    logging.info(f"📤 Отправка запроса в Битрикс24 (entityTypeId={ENTITY_TYPE_ID}): {fields_for_log}")
 
     async with aiohttp.ClientSession() as session:
         url = f"{WEBHOOK_URL}/crm.item.add.json"
@@ -65,7 +59,7 @@ async def create_invoice_in_bitrix(
             status_code = resp.status
             result = await resp.json()
             
-            logging.info(f"📥 Ответ от Битрикс24 (HTTP {status_code}): {result}")
+            logging.info(f"📥 Ответ crm.item.add (HTTP {status_code}): {result}")
             
             if "error" in result:
                 logging.error(f"❌ Ошибка Битрикс24: {result}")
@@ -73,9 +67,23 @@ async def create_invoice_in_bitrix(
             
             item_data = result.get("result", {}).get("item", {})
             item_id = item_data.get("id")
-            
-            logging.info(f"✅ Карточка успешно создана! ID: {item_id}, Сохранённые поля Битрикс: {item_data}")
-            
+
+            # Если поле файла не заполнилось (например, поле множественное), пробуем передать массивом через update
+            if not item_data.get(UF_INVOICE_FILE):
+                logging.info(f"Поле файла пустое, пробуем обновление через crm.item.update (массивом)...")
+                update_payload = {
+                    "entityTypeId": ENTITY_TYPE_ID,
+                    "id": item_id,
+                    "fields": {
+                        UF_INVOICE_FILE: [
+                            {"fileData": [file_name, file_b64]}
+                        ]
+                    }
+                }
+                async with session.post(f"{WEBHOOK_URL}/crm.item.update.json", json=update_payload) as up_resp:
+                    up_result = await up_resp.json()
+                    logging.info(f"📥 Ответ crm.item.update: {up_result}")
+
             domain = WEBHOOK_URL.split("/rest/")[0]
             crm_url = f"{domain}/crm/type/{ENTITY_TYPE_ID}/details/{item_id}/"
             
